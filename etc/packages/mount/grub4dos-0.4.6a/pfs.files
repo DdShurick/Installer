@@ -1,0 +1,8 @@
+/usr/lib/grub4dos/hmload.com
+/usr/lib/grub4dos/badgrub.exe
+/usr/lib/grub4dos/grldr.mbr
+/usr/lib/grub4dos/eltorito.sys
+/usr/lib/grub4dos/bootlace.com
+/usr/lib/grub4dos/grldr
+/usr/lib/grub4dos/grub.exe
+/etc/packages/mount/grub4dos-0.4.6a/pfs.files

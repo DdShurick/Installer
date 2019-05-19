@@ -1,0 +1,190 @@
+#!/bin/sh
+
+msgerr () {
+	yad --no-buttons --undecorated --image="error" --text="\n $1 \n" --timeout 3 --center
+	[ @$umnt@ = 1 ] && umount /mnt/$to_part
+	$2
+}
+
+add_menu_lst () {
+
+	echo "timeout 10
+default 0
+gfxmenu /boot/pictures/PUPPYRUS.gz
+/boot/unifont/unifont-rus.hex.gz
+
+# Frugal installed Puppy" #> /mnt/$to_part/menu.lst
+	write_menu_lst
+}
+
+write_menu_lst () {
+	
+	case ${p:2:1} in
+		a) d=0 ;;
+		b) d=1 ;;
+		c) d=2 ;;
+		d) d=3 ;;
+		e) d=4 ;;
+		f) d=5 ;;
+		g) d=6 ;;
+		h) d=7 ;;
+		i) d=8 ;;
+		j) d=9 ;;
+		k) d=10 ;;
+		l) d=11 ;;
+	esac
+	p=$(expr $(echo ${p:3}) - 1)
+
+	echo "
+title Richy
+ kernel (hd${d},${p})/boot/vmlinuz dev=$to_part dir=$to_dir "прочее труляля"
+ initrd (hd${d},${p})/boot/initrd.gz" #>> /mnt/$to_part/menu.lst
+
+}
+
+find_menu_lst () {
+
+	for p in $(echo "$list" | grep "$to_MBR" | awk '/part/ {print $2}')
+	do
+		if [ ! "$(grep $p /proc/mounts)" ]; then
+			mount /dev/$p /mnt/$p && umnt=1
+		fi
+		if [ -f /mnt/$p/menu.lst ]; then
+			write_menu_lst
+			q=1
+			break
+		else
+			[ "$umnt" = 1 ] && umount /mnt/$p
+		fi
+	done
+	[ "$q" = 1 ] || add_menu_lst		
+}
+
+#Задаём переменные
+. /etc/initvars
+modules=$(realpath $(losetup -a|awk '{print $3}'))
+: > /tmp/to_MBR
+list=$(lsblk -l -o TRAN,TYPE,NAME,SIZE,FSTYPE,MODEL /dev/sd? | egrep -v 'swap|TYPE')
+
+#GUI выбора раздела для установки
+echo "export Installer='<window icon-name=\"drive-harddisk\" title=\"Installer\" resizable=\"false\"><vbox>
+ <frame Выберите раздел><hbox>" | tee /tmp/installer
+
+echo "$list" | awk '/disk/ {print $3}' | while read to_dev
+do
+	label=$(echo "$list" | grep "$to_dev " | awk '{print $2" "$4}')
+	
+	case $(echo "$list" | grep "${to_dev} " | awk '{print $5$6}') in
+		FlashDisk) img=disk_usb ;;
+		Multi-Card) img=sdcard ;;
+		StorageDevice) img=harddisk_usb ;;
+		*) img=harddisk ;;
+	esac
+	echo "<vbox><text><label>$label</label></text>
+ <pixmap>
+ 	<height>64</height>
+ 	<input file>/usr/share/pixmaps/${img}.svg</input>
+ </pixmap>
+ <checkbox>
+   <action>echo ${to_dev:0:3} > /tmp/to_MBR</action>
+   <label>Установить в MBR ${to_dev:0:3}</label>
+ </checkbox>
+ <list>
+  <height>150</height>
+  <variable>to_part</variable>" | tee -a /tmp/installer
+
+	echo "$list" | grep ${to_dev} | awk '/part/ && !/swap/ {print $2}' | while read to_part
+	do
+		echo "  <item>$(echo "$list" | grep ${to_part} | awk '{print $2"\t\t"$4"\t\t"$3}')</item>" | tee -a /tmp/installer	
+	done
+	echo "</list></vbox>" | tee -a /tmp/installer
+done
+
+echo "</hbox>
+  <hbox>
+    <button help><action>leafpad /usr/share/doc/installer/README</action></button>
+    <button ok></button>
+    <button cancel></button>
+  </hbox></frame>
+</vbox></window>'" | tee -a /tmp/installer
+
+. /tmp/installer
+eval $(gtkdialog -c --program "Installer")
+
+[ "$EXIT" = "abort" -o "$EXIT" = "Cancel" ] && exit
+to_part=${to_part:0:4}
+[ "$EXIT" = "Help" ] && leafpad /usr/share/doc/installer/README
+
+if [ "$to_part" ]; then
+	if [ ! "$(grep $to_part /proc/mounts)" ]; then
+		mount /dev/$to_part /mnt/$to_part || msgerr "mount: you must be root" exit
+		[ "$(grep $to_part /proc/mounts)" ] && umnt=1
+	fi
+else
+	msgerr "Ничего не выбрано. Выходим." exit
+fi
+
+#Проверяем свободное место
+n=0
+for m in $modules
+  do
+	n=$(expr $n + $(du $m|awk '{print $1}'))
+  done
+	m=$(df -h /dev/$to_part |awk '/dev/ {print $4}')
+if [ "$n" -gt "$(df /dev/$to_part |awk '/dev/ {print $4}')" ]; then
+	msgerr "На $to_part едостаточно места для установки" "exit 1"
+else
+	yad --title=Installer --image="gtk-apply" --text="\n ${to_part}: свободно ${m}. \n Установить на $to_part? \n Вы уверены? \n" --center || msgerr "Отменено" exit
+fi
+
+#Имя каталога
+while true; do
+	to_dir=$(yad --text="Введите имя каталога для установки" --entry --entry-text="Richy" --center) || exit
+	[ -d /mnt/$to_part/$to_dir ] || mkdir -p /mnt/$to_part/$to_dir || msgerr "Невозможно создать каталог $to_dir" "exit 1"
+	[ "$(ls /mnt/$to_part/$to_dir)" ] && msgerr "Каталог $to_dir не пустой, измените имя \n" || break
+done
+
+#Создаём подкаталоги
+mkdir -p /mnt/$to_part/$to_dir/base /mnt/$to_part/$to_dir/modules /mnt/$to_part/$to_dir/optional
+
+#Копируем подключенные модули
+for m in $modules
+  do yad --no-buttons --undecorated --image="gtk-apply" --text="\n Копируется $(basename $m) \n" --center &
+	pid=$!
+	cp -u $m /mnt/$to_part/$to_dir/$(basename $(dirname $m))/ 
+	kill $pid
+  done
+
+#Копируем ядро и рамдиск
+if [ -f /mnt/$PDEV/boot/vmlinuz-$(uname -r) ]; then
+	mkdir -p /mnt/$to_part/boot
+	cp /mnt/$PDEV/boot/vmlinuz-$(uname -r) /mnt/$to_part/boot/
+elif [ -f /mnt/$PDEV/$PDIR/vmlinuz-$(uname -r) ]; then
+	cp /mnt/$PDEV/$PDIR/vmlinuz-$(uname -r) /mnt/$to_part/$to_dir/
+else msgerr "vmlinuz-$(uname -r) не найден"
+fi
+if [ -f /mnt/$PDEV/boot/minitrd.gz ]; then
+	mkdir -p /mnt/$to_part/boot
+	cp -u /mnt/$PDEV/boot/minitrd.gz /mnt/$to_part/boot/
+elif [ -f /mnt/$PDEV/$PDIR/minitrd.gz ]; then
+	cp -u /mnt/$PDEV/$PDIR/minitrd.gz /mnt/$to_part/$to_dir/
+else msgerr "minitrd.gz не найден"
+fi
+
+#Установка загрузчика
+if [ -s /tmp/to_MBR ]; then
+	to_MBR=$(cat /tmp/to_MBR)
+#Проверка наличия уже установленного загрузчика
+	case $(hexdump -n 2 /dev/$to_MBR |  awk '/0000000/ {print $2}') in
+		5eeb) find_menu_lst
+		;; 
+		63eb) echo "grub2" ;;
+		*) echo "unknown" ;;
+	esac
+
+	if yad --text="Установить grub4dos в MBR $to_MBR" --center; then
+		/usr/lib/grub4dos/bootlace.com /dev/$to_MBR || msgerr "Не удалось установить grub4dos на $to_MBR"
+	fi
+fi 
+[ "$umnt" = 1 ] && umount /mnt/$to_part
+yad --no-buttons --undecorated --image="gtk-apply" --text="\n Установка завершена \n" --center --timeout=3
